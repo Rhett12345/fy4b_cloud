@@ -155,10 +155,11 @@ def write_nc(out_nc, obs_time, l1b_data, l2_data, geo_data=None,
             cth_arr = l2_data["cloud_top_height"]["data"].astype(np.float32)
 
             cloud_class = np.full(cmm.shape, 255, dtype=np.uint8)
-            cloud_class[cmm == 0] = 0                                 # 晴空
-            cloud_class[(cmm == 1) & (cth_arr < 3000)] = 1            # 低云
-            cloud_class[(cmm == 1) & (cth_arr >= 3000) & (cth_arr < 6000)] = 2  # 中云
-            cloud_class[(cmm == 1) & (cth_arr >= 6000)] = 3           # 高云
+            # cloud_mask 编码: 0=云, 1=可能云, 2=可能晴, 3=晴, 126=太空
+            cloud_class[(cmm == 3) | (cmm == 2)] = 0                                        # 晴空
+            cloud_class[(cmm == 0) & (cth_arr < 3000)] = 1                                  # 低云
+            cloud_class[(cmm == 0) & (cth_arr >= 3000) & (cth_arr < 6000)] = 2              # 中云
+            cloud_class[(cmm == 0) & (cth_arr >= 6000)] = 3                                 # 高云
 
             ydim = "cloud_height_class_y"
             xdim = "cloud_height_class_x"

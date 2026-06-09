@@ -1,4 +1,4 @@
-"""云分类算法模块
+"""云分类算法模块（numpy 向量化版本）
 
 基于 AGRI_cloud_type_II.f90 移植，实现 FY-4B AGRI 云分类。
 
@@ -35,203 +35,149 @@ H_STANDARD = np.array([1.3, 3.5, 3.3, 9.5])          # 云顶高度 (km)
 H_TIBET = np.array([1.0, 3.0, 3.3, 8.0])
 
 
-def _agri_change(cloudtop_hei):
-    """位势高度转几何高度
+def _agri_change_vec(cloudtop_hei):
+    """位势高度转几何高度（numpy 向量化）
 
     Args:
-        cloudtop_hei: 云顶位势高度 (m)
+        cloudtop_hei: 云顶位势高度 (m), 任意形状数组
 
     Returns:
-        几何高度 (m)
+        几何高度 (m), 同形状数组
     """
     r = 6370856.0
     dh = cloudtop_hei / 10.0
-    gi = np.zeros(11)
-    for i in range(11):
-        hi = i * dh + r
-        gi[i] = 9.8 * (r / hi) ** 2
-    gm = np.mean(gi)
+    # i: (11,1,1), dh: (1,...)  → hi: (11,...)
+    i = np.arange(11, dtype=np.float32).reshape(-1, *([1] * cloudtop_hei.ndim))
+    dh = dh[None, ...]
+    hi = i * dh + r
+    gi = 9.8 * (r / hi) ** 2
+    gm = np.mean(gi, axis=0)
     return cloudtop_hei * 9.8 / gm
 
 
-def _classify_pixel(height, phase, radius, opti, elevation, temp, tbb):
-    """单个像素的云分类
+def _classify_vec(height, phase, radius, opti, elevation, temp, tbb):
+    """向量化云分类主逻辑
 
-    Args:
-        height: 云顶几何高度 (km)
-        phase: 云相态 (1=水, 2=过冷, 3=混合, 4=冰)
-        radius: 云有效粒子半径 (um)
-        opti: 云光学厚度
-        elevation: 地表海拔 (m)
-        temp: 云顶温度 (K)
-        tbb: 通道14亮温 (K)
-
-    Returns:
-        云类型编码 (int)
+    所有输入均为同尺寸二维数组 (ny, nx)。
+    返回云类型数组 (int32)，无效像素填 0。
     """
-    # 选择云顶高度阈值
-    if elevation >= 3000.0:
-        hh = H_TIBET.copy()
-    else:
-        hh = H_STANDARD.copy()
+    # --- 选择高度阈值 (Tibet vs Standard) ---
+    is_tibet = elevation >= 3000.0
+    # hh: (ny, nx, 4)
+    hh = np.where(is_tibet[..., None], H_TIBET, H_STANDARD)
 
-    # 判断多层云或厚云
-    if height > 6.5 and opti > 8.0:
-        return _classify_multilayer(opti, tbb, temp, height)
-    if opti >= 50.0:
-        return _classify_thick(height, radius)
+    # --- 基础条件掩码 ---
+    is_multilayer = (height > 6.5) & (opti > 8.0)
+    is_thick = opti >= 50.0
+    is_normal = ~is_multilayer & ~is_thick
 
-    # 模糊匹配: 比较与4类标准云的距离
-    dh = height - hh
-    dr = radius - R_STANDARD
-    dot = opti - OT_STANDARD
+    # --- 多层云分类 ---
+    ml_type = np.full(height.shape, 0, dtype=np.int32)
+    dt = tbb - temp
+    ml_type = np.where(opti < 19.0, 61, ml_type)
+    ml_type = np.where((opti >= 19.0) & (dt > 20.0), 61, ml_type)
+    ml_type = np.where((opti >= 19.0) & (dt <= 20.0) & (opti < 40.0), 62, ml_type)
+    ml_type = np.where((opti >= 40.0) & (height < 11.0), 5, ml_type)
+    ml_type = np.where((opti >= 40.0) & (height >= 11.0), 6, ml_type)
 
-    pdh = 0.5 * np.abs(dh) / height
-    pdr = 0.25 * np.abs(dr) / radius
-    pdot = 0.25 * np.abs(dot) / opti
+    # --- 厚云分类 ---
+    tk_type = np.full(height.shape, 63, dtype=np.int32)
+    tk_type = np.where((height > 4.0) & (radius < 30.0), 5, tk_type)
+    tk_type = np.where((height > 4.0) & (radius >= 30.0), 6, tk_type)
+
+    # --- 模糊匹配分类 ---
+    # dh, dr, dot: (ny, nx, 4)
+    dh = height[..., None] - hh
+    dr = radius[..., None] - R_STANDARD
+    dot = opti[..., None] - OT_STANDARD
+
+    pdh = 0.5 * np.abs(dh) / np.maximum(height[..., None], 1e-6)
+    pdr = 0.25 * np.abs(dr) / np.maximum(radius[..., None], 1e-6)
+    pdot = 0.25 * np.abs(dot) / np.maximum(opti[..., None], 1e-6)
 
     countt = pdh + pdr + pdot
-    ik = np.argmin(countt) + 1  # 1-based index
+    ik = np.argmin(countt, axis=-1) + 1  # 1-based
+    fz_type = ik.astype(np.int32)
 
-    typee = {1: 1, 2: 2, 3: 3, 4: 4}.get(ik, 4)
+    # --- 合并三种分类 ---
+    typee = np.where(is_multilayer, ml_type, np.where(is_thick, tk_type, fz_type))
 
-    # 第一轮修正
-    typee = _refine_round1(typee, height, opti, tbb, temp)
-    # 第二轮修正
-    typee = _refine_round2(typee, height, opti)
-    # 第三轮修正
-    typee = _refine_round3(typee, opti, height)
-    # 第四轮修正 (最终)
-    typee = _refine_final(typee, height, radius, phase, opti, tbb, temp)
+    # --- 修正链 ---
+    typee = _refine_round1_vec(typee, height, opti)
+    typee = _refine_round2_vec(typee, height, opti)
+    typee = _refine_round3_vec(typee, opti, height)
+    typee = _refine_final_vec(typee, height, radius, phase, opti, tbb, temp)
 
     return typee
 
 
-def _classify_multilayer(opti, tbb, temp, height):
-    """多层云分类 (height>6.5 and opti>8.0)"""
-    if opti < 19.0:
-        return 61  # CI over SC/ST
-    dt = tbb - temp
-    if dt > 20.0:
-        return 61
-    if 19.0 <= opti < 40.0:
-        return 62  # CI over AS/AC
-    if opti >= 40.0 and height < 11.0:
-        return 5   # NS
-    return 6       # CB
+def _refine_round1_vec(typee, height, opti):
+    """第一轮修正（向量化）"""
+    t = typee.copy()
+    t = np.where((typee == 1) & (height > 3.5) & (height < 6.0), 2, t)
+    t = np.where((typee == 1) & (height >= 6.0), 4, t)
+    t = np.where((typee == 2) & (height > 6.0) & (opti > 32.0), 6, t)
+    t = np.where((typee == 2) & (height < 3.5) & (opti < 10.0), 1, t)
+    t = np.where((typee == 2) & (height < 2.5), 1, t)
+    t = np.where((typee == 4) & (height < 6.0), 2, t)
+    return t
 
 
-def _classify_thick(height, radius):
-    """厚云分类 (opti>=50.0)"""
-    if height > 4.0 and radius < 30.0:
-        return 5   # NS
-    if height > 4.0 and radius >= 30.0:
-        return 6   # CB
-    return 63      # AS/AC over SC/ST
+def _refine_round2_vec(typee, height, opti):
+    """第二轮修正（向量化）"""
+    t = typee.copy()
+    t = np.where((typee == 2) & (height > 6.0) & (opti <= 8.0), 4, t)
+    t = np.where((typee == 2) & (opti < 2.0) & (height > 5.5), 4, t)
+    t = np.where((typee == 63) & (height < 3.0), 1, t)
+    return t
 
 
-def _refine_round1(typee, height, opti, tbb, temp):
-    """第一轮修正"""
-    if typee == 1 and 3.5 < height < 6.0:
-        return 2
-    if typee == 1 and height >= 6.0:
-        return 4
-    if typee == 2 and height > 6.0 and opti > 32.0:
-        return 6
-    if typee == 2 and height < 3.5 and opti < 10.0:
-        return 1
-    if typee == 2 and height < 2.5:
-        return 1
-    if typee == 4 and height < 6.0:
-        return 2
-    return typee
+def _refine_round3_vec(typee, opti, height):
+    """第三轮修正（向量化）"""
+    t = typee.copy()
+    t = np.where(typee == 61, 62, t)
+    t = np.where((typee == 62) & (opti > 24), 5, t)
+    t = np.where((typee == 1) & (height <= 1.1), 7, t)
+    t = np.where((typee == 1) & (height > 1.1), 8, t)
+    t = np.where((typee == 6) & (height < 4.5), 3, t)
+    return t
 
 
-def _refine_round2(typee, height, opti):
-    """第二轮修正"""
-    if typee == 2 and height > 6.0 and opti <= 8.0:
-        return 4
-    if typee == 2 and opti < 2.0 and height > 5.5:
-        return 4
-    if typee == 63 and height < 3.0:
-        return 1
-    return typee
-
-
-def _refine_round3(typee, opti, height):
-    """第三轮修正"""
-    if typee == 61:
-        return 62
-    if typee == 62 and opti > 24:
-        return 5
-    if typee == 1 and height <= 1.1:
-        return 7
-    if typee == 1 and height > 1.1:
-        return 8
-    if typee == 6 and height < 4.5:
-        return 3
-    return typee
-
-
-def _refine_final(typee, height, radius, phase, opti, tbb, temp):
-    """最终修正"""
+def _refine_final_vec(typee, height, radius, phase, opti, tbb, temp):
+    """最终修正（向量化）"""
+    t = typee.copy()
     dt = tbb - temp
 
-    if typee == 6 and radius < 10.0:
-        return 5
-    if typee == 2 and height <= 3.0 and dt < 2.0:
-        return 8
-    if typee == 2 and opti > 32.0:
-        return 63
-    if typee == 5 and height >= 11.0:
-        return 6
-    if typee == 6 and dt > 15.0:
-        return 62
-    if typee == 2 and radius > 30.0:
-        return 3
-    if typee == 8 and radius > 25.0 and phase == 1:
-        return 3
-    if typee == 7 and radius > 25.0 and phase == 1:
-        return 3
-    if typee == 3 and opti > 35.0:
-        return 6
-    if typee == 5 and dt <= 0.0:
-        return 6
-    if typee == 5 and dt > 20.0:
-        return 61
-    if typee == 62 and dt > 20.0:
-        return 61
-    if typee == 8 and opti > 32.0:
-        return 3
-    if typee == 7 and opti > 32.0:
-        return 3
-    if typee == 5 and dt <= 0:
-        return 6
-    if typee == 8 and dt <= -2:
-        return 3
-    if typee == 7 and dt <= -2:
-        return 3
-    if typee == 2 and height > 6.0 and opti > 24.0:
-        return 6
-    if typee == 61 and opti > 24.0:
-        return 6
-    if typee == 62 and opti > 24:
-        return 5
-    if typee == 6 and radius < 25.0 and height < 11.0:
-        return 5
-    if typee == 63 and opti > 42.0:
-        return 5
-    if typee == 3 and opti > 30.0:
-        return 5
-    if typee == 8 and opti >= 16.0:
-        return 5
-    if typee == 7 and opti >= 16.0:
-        return 5
-    return typee
+    t = np.where((typee == 6) & (radius < 10.0), 5, t)
+    t = np.where((typee == 2) & (height <= 3.0) & (dt < 2.0), 8, t)
+    t = np.where((typee == 2) & (opti > 32.0), 63, t)
+    t = np.where((typee == 5) & (height >= 11.0), 6, t)
+    t = np.where((typee == 6) & (dt > 15.0), 62, t)
+    t = np.where((typee == 2) & (radius > 30.0), 3, t)
+    t = np.where((typee == 8) & (radius > 25.0) & (phase == 1), 3, t)
+    t = np.where((typee == 7) & (radius > 25.0) & (phase == 1), 3, t)
+    t = np.where((typee == 3) & (opti > 35.0), 6, t)
+    t = np.where((typee == 5) & (dt <= 0.0), 6, t)
+    t = np.where((typee == 5) & (dt > 20.0), 61, t)
+    t = np.where((typee == 62) & (dt > 20.0), 61, t)
+    t = np.where((typee == 8) & (opti > 32.0), 3, t)
+    t = np.where((typee == 7) & (opti > 32.0), 3, t)
+    t = np.where((typee == 5) & (dt <= 0), 6, t)
+    t = np.where((typee == 8) & (dt <= -2), 3, t)
+    t = np.where((typee == 7) & (dt <= -2), 3, t)
+    t = np.where((typee == 2) & (height > 6.0) & (opti > 24.0), 6, t)
+    t = np.where((typee == 61) & (opti > 24.0), 6, t)
+    t = np.where((typee == 62) & (opti > 24), 5, t)
+    t = np.where((typee == 6) & (radius < 25.0) & (height < 11.0), 5, t)
+    t = np.where((typee == 63) & (opti > 42.0), 5, t)
+    t = np.where((typee == 3) & (opti > 30.0), 5, t)
+    t = np.where((typee == 8) & (opti >= 16.0), 5, t)
+    t = np.where((typee == 7) & (opti >= 16.0), 5, t)
+    return t
 
 
 def run_cloud_classification(l1b_data, l2_data, geo_data, zsfc=None):
-    """运行云分类算法
+    """运行云分类算法（numpy 向量化）
 
     Args:
         l1b_data: L1B数据字典 (需要 C14)
@@ -295,49 +241,41 @@ def run_cloud_classification(l1b_data, l2_data, geo_data, zsfc=None):
     else:
         zsfc_arr = zsfc.astype(np.float32)
 
-    # 位势高度转几何高度 (批量)
-    ihh = np.vectorize(_agri_change)(cth)
+    # 位势高度转几何高度 (向量化)
+    ihh = _agri_change_vec(cth)
     # 云顶相对高度 (km)
     height = (ihh - zsfc_arr) / 1000.0
 
-    # 逐像素分类
-    for j in range(ny):
-        for i in range(nx):
-            # 跳过无效像素
-            if not np.isfinite(bt14[j, i]):
-                continue
-            if vzen[j, i] >= ZEN_MAX:
-                continue
-            if sunzen[j, i] >= SOLZEN_MAX:
-                continue
-            if bt14[j, i] < BT14_MIN or bt14[j, i] > BT14_MAX:
-                continue
+    # 有效性掩码: 所有条件同时满足的像素才参与分类
+    valid = (
+        np.isfinite(bt14) &
+        (vzen < ZEN_MAX) &
+        (sunzen < SOLZEN_MAX) &
+        (bt14 >= BT14_MIN) & (bt14 <= BT14_MAX) &
+        (height > 0.0) &
+        np.isfinite(ctt)
+    )
+    if cod is not None:
+        valid = valid & np.isfinite(cod)
+    if cer is not None:
+        valid = valid & np.isfinite(cer)
 
-            # 缺少光学厚度或半径 → 标记0
-            if cod is None or cer is None:
-                ctype[j, i] = 0
-                continue
+    # 没有光学厚度或半径 → 有效像素标记为 0 (无云/缺失)
+    if cod is None or cer is None:
+        ctype[valid] = 0
+        return ctype
 
-            if not np.isfinite(cod[j, i]):
-                ctype[j, i] = 0
-                continue
+    # 提取有效像素参数
+    h = height[valid]
+    ph = phase[valid]
+    rad = cer[valid]
+    ot = cod[valid]
+    temp = ctt[valid]
+    tbb = bt14[valid]
+    elev = zsfc_arr[valid]
 
-            h = height[j, i]
-            if h <= 0.0:
-                ctype[j, i] = 0
-                continue
-
-            ph = phase[j, i]
-            rad = cer[j, i]
-            ot = cod[j, i]
-            temp = ctt[j, i]
-            tbb = bt14[j, i]
-            elev = zsfc_arr[j, i]
-
-            if not (np.isfinite(rad) and np.isfinite(temp)):
-                ctype[j, i] = 0
-                continue
-
-            ctype[j, i] = _classify_pixel(h, ph, rad, ot, elev, temp, tbb)
+    # 向量化分类
+    result = _classify_vec(h, ph, rad, ot, elev, temp, tbb)
+    ctype[valid] = result
 
     return ctype
