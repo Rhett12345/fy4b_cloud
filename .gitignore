@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.png
+*.nc
+*.hdf
+*.HDF
+*.h5
+*.H5
+.claude/
+fy4b_cloud_inputs_nc/

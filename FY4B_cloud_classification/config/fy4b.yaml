@@ -1,0 +1,196 @@
+# FY-4B AGRI 云产品数据处理配置
+
+# L2 产品目录映射
+product_dirs:
+  L1B: L1_HDF
+  CLM: L2_CLM_DISK      # cloud mask
+  CLP: L2_CLP_DISK      # cloud phase
+  CLOD: L2_CLOD_DISK    # cloud optical depth
+  CTH: L2_CTH_DISK      # cloud top height
+  CTT: L2_CTT_DISK      # cloud top temperature
+  CTP: L2_CTP_DISK      # cloud top pressure
+  CLT: L2_CLT_DISK      # cloud type
+  CPD: L2_CPD_DISK      # cloud optical thickness + effective radius
+
+# L2 变量名候选（兼容不同批次数据格式）
+l2_var_candidates:
+  cloud_mask:
+    - CLM
+    - Cloud_Mask
+    - CloudMask
+    - cloud_mask
+    - NOMCloudMask
+    - Cloud_Detection
+    - CloudDetection
+  cloud_phase:
+    - CLP
+    - Cloud_Phase
+    - CloudPhase
+    - cloud_phase
+    - NOMCloudPhase
+  cloud_optical_depth:
+    - COT
+    - CLOD
+    - Cloud_Optical_Depth
+    - CloudOpticalDepth
+    - cloud_optical_depth
+    - Optical_Depth
+    - COD
+  cloud_top_height:
+    - CTH
+    - Cloud_Top_Height
+    - CloudTopHeight
+    - cloud_top_height
+    - NOMCloudTopHeight
+  cloud_top_temperature:
+    - CTT
+    - Cloud_Top_Temperature
+    - CloudTopTemperature
+    - cloud_top_temperature
+    - NOMCloudTopTemperature
+  cloud_top_pressure:
+    - CTP
+    - Cloud_Top_Pressure
+    - CloudTopPressure
+    - cloud_top_pressure
+    - NOMCloudTopPressure
+  cloud_type:
+    - CLT
+    - Cloud_Type
+    - CloudType
+    - cloud_type
+    - NOMCloudType
+  cloud_effective_radius:
+    - CER
+    - Cloud_Effective_Radius
+    - CloudEffectiveRadius
+    - cloud_effective_radius
+    - Effective_Radius
+    - REFF
+  cloud_optical_thickness:
+    - COT
+    - Cloud_Optical_Thickness
+    - CloudOpticalThickness
+    - cloud_optical_thickness
+
+# L1B 通道标定配置
+channels:
+  - id: C01
+    nom: NOMChannel01
+    cal: CALChannel01
+    nom_max: 4096
+    type: reflectance
+    units: "1"
+    long_name: "Channel 01 reflectance"
+  - id: C02
+    nom: NOMChannel02
+    cal: CALChannel02
+    nom_max: 4096
+    type: reflectance
+    units: "1"
+    long_name: "Channel 02 reflectance"
+  - id: C03
+    nom: NOMChannel03
+    cal: CALChannel03
+    nom_max: 4096
+    type: reflectance
+    units: "1"
+    long_name: "Channel 03 reflectance"
+  - id: C04
+    nom: NOMChannel04
+    cal: CALChannel04
+    nom_max: 4096
+    type: reflectance
+    units: "1"
+    long_name: "Channel 04 reflectance"
+  - id: C05
+    nom: NOMChannel05
+    cal: CALChannel05
+    nom_max: 4096
+    type: reflectance
+    units: "1"
+    long_name: "Channel 05 reflectance"
+  - id: C06
+    nom: NOMChannel06
+    cal: CALChannel06
+    nom_max: 4096
+    type: reflectance
+    units: "1"
+    long_name: "Channel 06 reflectance"
+  - id: C07
+    nom: NOMChannel07
+    cal: CALChannel07
+    nom_max: 65534
+    type: brightness_temperature
+    units: "K"
+    long_name: "Channel 07 brightness temperature"
+  - id: C08
+    nom: NOMChannel08
+    cal: CALChannel08
+    nom_max: 4096
+    type: brightness_temperature
+    units: "K"
+    long_name: "Channel 08 brightness temperature"
+  - id: C09
+    nom: NOMChannel09
+    cal: CALChannel09
+    nom_max: 4096
+    type: brightness_temperature
+    units: "K"
+    long_name: "Channel 09 brightness temperature"
+  - id: C10
+    nom: NOMChannel10
+    cal: CALChannel10
+    nom_max: 4096
+    type: brightness_temperature
+    units: "K"
+    long_name: "Channel 10 brightness temperature"
+  - id: C11
+    nom: NOMChannel11
+    cal: CALChannel11
+    nom_max: 4096
+    type: brightness_temperature
+    units: "K"
+    long_name: "Channel 11 brightness temperature"
+  - id: C12
+    nom: NOMChannel12
+    cal: CALChannel12
+    nom_max: 4096
+    type: brightness_temperature
+    units: "K"
+    long_name: "Channel 12 brightness temperature"
+  - id: C13
+    nom: NOMChannel13
+    cal: CALChannel13
+    nom_max: 4096
+    type: brightness_temperature
+    units: "K"
+    long_name: "Channel 13 brightness temperature"
+  - id: C14
+    nom: NOMChannel14
+    cal: CALChannel14
+    nom_max: 4096
+    type: brightness_temperature
+    units: "K"
+    long_name: "Channel 14 brightness temperature"
+
+# GEO 角度变量映射
+geo_var_map:
+  column_number: Navigation/ColumnNumber
+  line_number: Navigation/LineNumber
+  satellite_azimuth: Navigation/NOMSatelliteAzimuth
+  satellite_zenith: Navigation/NOMSatelliteZenith
+  sun_azimuth: Navigation/NOMSunAzimuth
+  sun_zenith: Navigation/NOMSunZenith
+  sun_glint_angle: Navigation/NOMSunGlintAngle
+
+# 时间匹配容差（分钟）
+time_matching:
+  max_diff_minutes: 20
+
+# NetCDF 输出设置
+output:
+  format: NETCDF4
+  complevel: 4
+  fill_value_float: -9999.0
+  fill_value_int: -9999
